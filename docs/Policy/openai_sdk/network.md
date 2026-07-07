@@ -223,7 +223,7 @@ the call all escape the first-argument check on a known callee.
 
 ## What this policy does not cover
 
-- Network calls made via libraries outside the listed callees: `aiohttp`, `urllib3` directly, `socket.create_connection`, `pycurl`, gRPC stubs, custom transports.
+- Network calls made via libraries outside the listed callees: `urllib3` directly, `socket.create_connection`, `pycurl`, gRPC stubs, custom transports. (Aliased `aiohttp` sessions ARE covered since the 2026-07 harmonization — they canonicalize to `aiohttp.ClientSession.<method>`, which OAI-005's callee list carries.)
 - Network calls where a `timeout=` is set to an unreasonable value (e.g. `timeout=3600`). The rule treats any timeout kwarg as a pass.
 - Network calls made transitively — the tool calls a helper that performs the request without a timeout. The predicate inspects the tool body directly and does not follow calls into other modules.
 - Retries without backoff. A tool that times out cleanly but retries in a tight loop is still a denial-of-budget hazard; that is OAI-009 / idempotency territory, not this policy.

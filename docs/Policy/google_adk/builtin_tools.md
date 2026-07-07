@@ -25,24 +25,27 @@ references: [LLM06]
 ## What this policy covers
 
 Unsafe-by-default configuration on Google ADK built-in tool classes — specifically
-an `LlmAgent` that grants `BashTool` with no explicit `policy=`. The match is
-`agent_uses_hosted_tool_class: [BashTool]` AND `not
-agent_hosted_tool_kwarg_present(class: BashTool, kwarg: policy)`.
+an `LlmAgent` that grants the bash tool with no explicit `policy=`. google-adk
+names the class `ExecuteBashTool` today (`BashTool` in earlier releases), so the
+match is an `any` over both names: for each, `agent_uses_hosted_tool_class`
+AND `not agent_hosted_tool_kwarg_present(class: <name>, kwarg: policy)`.
 
 ---
 
 ## Why built-in tool configuration is a distinct concern in agent tools
 
-ADK's built-in tools ship with permissive defaults, and `BashTool` is the sharpest
+ADK's built-in tools ship with permissive defaults, and the bash tool is the sharpest
 example. Its `BashToolPolicy` defaults to `allowed_command_prefixes=("*",)` — every
 command — and `blocked_operators=()` — no shell metacharacters blocked. So an
-`LlmAgent` that simply lists `BashTool()` in its tools, without constructing a
+`LlmAgent` that simply lists `ExecuteBashTool()` in its tools, without constructing a
 restrictive `policy=`, hands the model a fully-injectable shell: any command, with
 pipes, redirects, and `;`/`&&` chaining unfiltered.
 
 This is excessive agency (OWASP LLM06) delivered through a default rather than an
 obvious dangerous call. The author did not write `subprocess.run(cmd, shell=True)` —
-they wrote `BashTool()`, which looks innocuous but is equivalent. Because the gate
+they wrote `ExecuteBashTool()`, which looks innocuous but is equivalent. The tool
+does request a generic per-run user confirmation, but with no policy that
+confirmation is the only gate over model-supplied commands. Because the gate
 is a constructor argument (`policy=`), the rule checks for its presence; the fix is
 *config* — set a restrictive policy on the tool, no tool-body code involved.
 
@@ -53,12 +56,13 @@ this through `BashToolPolicy`, which is what this rule looks for.)
 
 ## Rule-by-rule defense
 
-### ADK-008 — Agent grants BashTool with no restrictive command policy (Severity: high, Confidence: 0.75, Fix type: config)
+### ADK-008 — Agent grants the bash tool with no restrictive command policy (Severity: high, Confidence: 0.75, Fix type: config)
 
-**What we detect:** an `LlmAgent` whose tools include `BashTool` with no `policy=`
+**What we detect:** an `LlmAgent` whose tools include `ExecuteBashTool` (or the
+earlier `BashTool`) with no `policy=`
 kwarg set on it.
 
-**Why it is flaggable:** without `policy=`, `BashTool` defaults to every command and
+**Why it is flaggable:** without `policy=`, the bash tool defaults to every command and
 no operator filtering — model-supplied input reaches the shell with no allow-list.
 
 **Real-world consequence:** an agent with a bare `BashTool()` is prompt-injected into

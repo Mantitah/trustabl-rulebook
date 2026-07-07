@@ -84,9 +84,12 @@ and a request behind a cross-module helper a false negative.
 ## What this policy does not cover
 
 Identical to [openai_sdk/network.md](../openai_sdk/network.md#what-this-policy-does-not-cover):
-non-listed clients (`aiohttp`, raw `socket`, `pycurl`), unreasonable-but-present
+non-listed clients (raw `socket`, `pycurl`, `urllib3` directly), unreasonable-but-present
 timeout values, transitive calls through another module, and retry-without-backoff
-storms (idempotency territory, CSDK-006).
+storms (idempotency territory, CSDK-006). Since the 2026-07 callee harmonization
+the list covers `requests` (incl. `Session` aliases), `httpx`, `urllib`
+(`urllib.request.urlopen` and the bare `urlopen` import), and aliased `aiohttp`
+sessions (canonicalized to `aiohttp.ClientSession.<method>`).
 
 ---
 

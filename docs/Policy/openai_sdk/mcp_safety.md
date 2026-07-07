@@ -25,8 +25,10 @@ references: [LLM01]
 ## What this policy covers
 
 OpenAI Agents SDK agents that import tools from one or more MCP servers
-(`mcp_servers=` present) but configure no `input_guardrails`. The match is
-`agent_kwarg_present: [mcp_servers]` AND `agent_kwarg_list_empty:
+(`mcp_servers=` present and non-empty — an empty `mcp_servers=[]` wires
+nothing and does not fire) but configure no `input_guardrails`. The match is
+`agent_kwarg_present: [mcp_servers]` AND NOT `agent_kwarg_list_empty:
+[mcp_servers]` AND `agent_kwarg_list_empty:
 [input_guardrails]` — it fires only when MCP is actually wired, so non-MCP agents
 are unaffected.
 

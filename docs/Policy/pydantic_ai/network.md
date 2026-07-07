@@ -82,8 +82,10 @@ and under-fires on request libraries outside the recognized `requests`/`httpx` s
 
 ## What this policy does not cover
 
-- Request libraries other than `requests` / `httpx` — `urllib.request`, `aiohttp`,
-  `urllib3`, or a bespoke HTTP client are not in the recognized callee set.
+- Request libraries outside the recognized callee set — `urllib3` directly or a
+  bespoke HTTP client. (`urllib.request.urlopen`/`urlopen`, `requests.Session`
+  aliases, and aliased `aiohttp` sessions ARE covered since the 2026-07
+  harmonization.)
 - A timeout set through a mechanism other than the per-call `timeout=` kwarg — a
   `requests.Session` default, an `httpx.Client(timeout=...)` the call inherits, or a
   socket-level default — the rule cannot see it and fires anyway.

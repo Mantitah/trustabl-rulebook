@@ -26,7 +26,7 @@ references: [LLM10]
 ## What this policy covers
 
 Outbound network calls from inside an MCP tool handler made without a timeout
-(`call_without_kwarg` over the `requests` / `httpx` / `urllib` callee set, with a
+(`call_without_kwarg` over the `requests` / `httpx` / `urllib` / aliased-`aiohttp` callee set, with a
 kwarg present as literal `None` counted as missing).
 
 ## Rule-by-rule defense

@@ -111,7 +111,7 @@ an executor whose input is provably never untrusted.
 ### AG2-002 — Executor runs code with no human review (Severity: high, Confidence: 0.85, Fix type: config)
 
 **What we detect:** an agent with `human_input_mode="NEVER"` AND a
-`code_execution_config` present (predicates `agent_kwarg_value` +
+`code_execution_config` present and not the disabling `False` (predicates `agent_kwarg_value` +
 `agent_kwarg_present`).
 
 **Why it is flaggable:** the combination makes a code-executing agent fully
@@ -156,6 +156,7 @@ kwarg.
 ### AG2-005 — AssistantAgent enables code execution on the LLM agent (Severity: medium, Confidence: 0.7, Fix type: config)
 
 **What we detect:** an `AssistantAgent` with a `code_execution_config` present
+and not explicitly `False` (the safe disable form its own fix prescribes)
 (predicate `agent_kwarg_present`).
 
 **Why it is flaggable:** AutoGen's recommended pattern keeps the

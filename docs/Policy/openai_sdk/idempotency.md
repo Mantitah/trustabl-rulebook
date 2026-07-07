@@ -80,7 +80,7 @@ positives. A review prompt, not a verdict.
 ### OAI-019 — TypeScript mutating tool has no idempotency key (Severity: medium, Confidence: 0.5, Fix type: code)
 
 **What we detect:** a TS tool whose name starts with a mutating verb
-(`create_` / `send_` / `delete_` / `post_` / `update_` / `refund_` / `charge_` /
+(`create` / `send` / `delete` / `post` / `update` / `refund` / `charge` /
 `issue_`) and whose body mentions no idempotency-key marker (`idempot` /
 `request_id` / `requestId` / `txn_id` / `correlation_id` / …).
 
@@ -102,8 +102,10 @@ backend and honor it on repeat.
 named outside the marker set are common false positives, and `has_body_text` is a
 substring heuristic.
 
-**Provisional (TypeScript):** load-validated today; will not fire until the
-engine's TypeScript tool parser ships.
+**TypeScript note:** the engine's TypeScript tool discovery ships, so OAI-019
+fires on discovered TS tools. Its name prefixes are underscore-free
+(`create` / `send` / ...), so both `create_charge` and `createCharge` naming
+match.
 
 ---
 

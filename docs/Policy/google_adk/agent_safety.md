@@ -89,11 +89,12 @@ threat lines run through them.
 
 The **excessive-agency / loss-of-mediation** line (OWASP LLM06):
 `before_tool_callback` is the only synchronous gate over a tool call, so an agent
-with a dangerous tool (`BashTool`, web search, `UrlContextTool`/`LoadWebPage`,
+with a dangerous tool (the bash tool — `ExecuteBashTool`, `BashTool` in
+earlier google-adk — web search, `UrlContextTool`/`LoadWebPage`,
 `AgentTool`) and no callback (ADK-102/105/107/110) executes model-chosen
 invocations with nothing able to deny them. A code_executor is gated only by
 `before_model_callback`, since emitted code blocks are not tool calls (ADK-106). A
-sub-agent granted `BashTool` (ADK-103) routes around the parent's callback entirely.
+sub-agent granted the bash tool (ADK-103) routes around the parent's callback entirely.
 A `LoopAgent` with no `max_iterations` (ADK-108) can spin unbounded. And a missing
 `description` (ADK-101) breaks delegation routing, the substrate the whole graph
 depends on.
@@ -119,8 +120,9 @@ a reliability/routing defect, not a direct breach. **Fix type — config:** add 
 one-sentence `description=`. **Confidence 0.85:** an agent never used as a delegation
 target does not need one (false positive).
 
-### ADK-102 — Agent with BashTool has no before_tool_callback (Severity: high, Confidence: 0.85, Fix type: config)
-**What we detect:** `LlmAgent` + `BashTool` + no `before_tool_callback`. **Why
+### ADK-102 — Agent with the bash tool has no before_tool_callback (Severity: high, Confidence: 0.85, Fix type: config)
+**What we detect:** `LlmAgent` + the bash tool (`ExecuteBashTool`, the current
+google-adk class name, or the earlier `BashTool`) + no `before_tool_callback`. **Why
 flaggable:** `before_tool_callback` is the only synchronous gate over a shell call;
 absent it, the model's command runs unmediated. **Real-world consequence:** an
 injected instruction runs `rm`/`curl` with nothing to deny it. **Why high:** unmediated
@@ -128,13 +130,13 @@ shell execution. **Fix type — config:** add a `before_tool_callback` that allo
 commands and returns a refusal `Content` to block. **Confidence 0.85:** safety may
 live in a restrictive `BashToolPolicy` instead (ADK-008) — possible false positive.
 
-### ADK-103 — Sub-agent is granted BashTool (Severity: high, Confidence: 0.9, Fix type: config)
+### ADK-103 — Sub-agent is granted the bash tool (Severity: high, Confidence: 0.9, Fix type: config)
 **What we detect:** an `LlmAgent` that is a delegation target (`agent_is_subagent_of_any`)
-and holds `BashTool`. **Why flaggable:** a delegated child's tool calls are not mediated
+and holds the bash tool (`ExecuteBashTool`/`BashTool`). **Why flaggable:** a delegated child's tool calls are not mediated
 by the parent's callback, so shell access on the child defeats the parent's policy.
 **Real-world consequence:** the model hands off to the sub-agent and asks it to run the
 command the parent would have blocked. **Why high:** it nullifies the parent's gate.
-**Fix type — config:** remove `BashTool` from the sub-agent, or make the shell-capable
+**Fix type — config:** remove the bash tool from the sub-agent, or make the shell-capable
 agent the top-level orchestrator. **Confidence 0.9:** the graph relationship + grant are
 read directly.
 
@@ -205,7 +207,9 @@ through a non-literal value the static read cannot resolve is the residual false
 negative.
 
 ### ADK-110 — UrlContextTool/LoadWebPage without before_tool_callback (Severity: medium, Confidence: 0.7, Fix type: config)
-**What we detect:** `LlmAgent` with `UrlContextTool` / `LoadWebPage` and no
+**What we detect:** `LlmAgent` with a URL/page-fetch built-in — the idiomatic
+`url_context` instance or `load_web_page` function reference (matched as bare
+name grants), or a directly-constructed `UrlContextTool` — and no
 `before_tool_callback`. **Why flaggable:** these fetch model-chosen URLs whose content
 re-enters the loop — a prompt-injection vector and an SSRF surface — with no gate.
 **Real-world consequence:** the model fetches an attacker page (injection) or an internal
