@@ -4,8 +4,8 @@ category: claude_skill
 topic: skill_safety
 rules:
   - id: CSKILL-001
-    severity: critical
-    confidence: 0.95
+    severity: high
+    confidence: 0.9
     scope: skill
     fix_type: config
   - id: CSKILL-002
@@ -61,7 +61,7 @@ references: [LLM01, LLM02, LLM03, LLM06, AST03, AST04, AST05, AST08, ASI04]
 **Policy ID:** `claude_skill_safety`  
 **File:** `claude_skill/skill_safety.yaml`  
 **Rules:** CSKILL-001, CSKILL-002, CSKILL-003, CSKILL-010, CSKILL-011, CSKILL-030, CSKILL-020, CSKILL-040, CSKILL-050, CSKILL-060  
-**Severities:** critical, high, critical, high, critical, high, medium, medium, high, medium  
+**Severities:** high, high, critical, high, critical, high, medium, medium, high, medium  
 **Fix types:** config (SKILL.md edits) + code (bundled-file edits for CSKILL-010/011/030)  
 **References:** OWASP LLM Top 10:2025 — LLM01, LLM02, LLM03, LLM06 · OWASP Agentic Skills Top 10 — AST03, AST04, AST05, AST08 · OWASP ASI — ASI04
 
@@ -133,25 +133,46 @@ over-privileged template propagates its blast radius wherever it is reused.
 
 ## Rule-by-rule defense
 
-### CSKILL-001 — Skill auto-approves unrestricted shell (critical, 0.95, config)
+### CSKILL-001 — Skill auto-approves unrestricted shell (high, 0.9, config)
 
 **What we detect:** `allowed-tools` grants unrestricted shell — a bare `Bash`
 token or a wildcard `Bash(*)` / `Bash(:*)` (`skill_allows_unrestricted_shell`).
 
-**Why it is flaggable:** `allowed-tools` is an auto-approval list. An
-unrestricted `Bash` grant means any shell command the skill issues runs without
-a prompt — combined with bundled scripts and dynamic-context commands, that is
-arbitrary local code execution on activation.
+**Why it is flaggable:** `allowed-tools` is an auto-approval list, not a
+sandbox (per the Claude Code docs: tools the skill lists run "without asking
+permission when this skill is active", and the docs' own guidance warns
+"a skill can grant itself broad tool access"). An unrestricted `Bash` grant
+means that while the skill is active, any shell command — including one
+steered by injected content the skill reads — runs with no per-command
+approval, and the grant covers far more than the commands the skill needs.
+The docs' own example scopes grants (`Bash(git add *) Bash(git commit *)`),
+which is exactly the fix.
 
-**Real-world consequence:** A "setup helper" skill shipping `allowed-tools:
-Bash(*)` runs any command it (or an injected instruction) chooses the moment it
-activates, with no per-command approval.
+**Real-world consequence:** A workflow skill shipping a bare `Bash` grant is
+activated (by the user's slash command, or by Claude itself when the skill
+looks relevant — model invocation is on by default); mid-skill, injected
+instructions in a file it reads run arbitrary commands silently.
 
-**Why critical:** Auto-approved arbitrary shell is maximal agency *and* the
-approval gate — the user's last line of defense — is removed. Confidence 0.95:
-the grant is read directly from frontmatter; the only gap is a skill that
+**Why high (recalibrated from critical, 2026-07):** the grant is bounded in
+ways critical should respect — it applies only while the skill is active,
+only after the workspace/plugin trust dialog, and a skill cannot change
+permission modes or set bypass flags. Exploitation therefore needs an active
+skill plus a steering vector; that is a serious weakened-control finding, not
+an unattended input-to-impact path. Critical in this pack is reserved for the
+genuinely pre-model/unattended patterns (CSKILL-003's load-time
+egress+secrets, CSKILL-011's credential-reading bundled scripts). Real-world
+pushback (a maintainer of an 86-skill plugin, 2026-07) correctly noted the
+old "runs without user intervention" framing overstated the mechanism; what
+survives that rebuttal is least-privilege (scope the grant) plus the fact
+that model invocation is on by default — the user-invocation gate the
+by-design argument relies on is not actually set unless
+`disable-model-invocation: true` is (CSKILL-050's territory).
+
+**Confidence 0.9:** the grant is read directly from frontmatter, so detection
+itself has no false positives; the residual judgment gap is a skill that
 genuinely needs broad shell (a build runner), which should still scope its
-grants.
+grants — and workflow ecosystems where bare `Bash` is the norm, where the
+finding is real but reads as noise at volume.
 
 ### CSKILL-002 — Skill runs shell during load, dynamic-context execution (high, 0.9, config)
 
@@ -319,6 +340,18 @@ review nudge. The broader "implicitly read-only-sounding" case is out of scope.
 
 ## What this policy does not cover (v1)
 
+- **The "by-design plugin" trust argument.** A maintainer can reasonably reply
+  that a bare `Bash` grant is required for the skill to function, that the
+  grant only suppresses prompts while a user-chosen skill is active, and that
+  a skill cannot set permission modes — all true (and why CSKILL-001 is high,
+  not critical). The rule still stands on two legs the rebuttal does not
+  cover: (1) least-privilege — a scoped grant (`Bash(<tool> *)`) keeps the
+  skill working while auto-approving only its own commands; (2) the
+  user-invocation gate is off by default — Claude can auto-load a skill it
+  judges relevant unless `disable-model-invocation: true` is set, which
+  side-effecting skills rarely set (CSKILL-050 fires for that pairing).
+  Outreach and report copy must not paraphrase this rule as "runs without
+  user intervention"; the shipped explanation text is the accurate framing.
 - **Bundled-script risks beyond egress/secret-read.** CSKILL-010/011 now read
   bundled scripts for network egress and credential reads, but other in-script
   risks (destructive filesystem ops, obfuscated/encoded payloads that evade the
