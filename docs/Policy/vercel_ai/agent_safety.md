@@ -18,17 +18,22 @@ rules:
     confidence: 0.65
     scope: agent
     fix_type: config
-references: [LLM06, LLM10]
+  - id: VAI-009
+    severity: medium
+    confidence: 0.7
+    scope: agent
+    fix_type: config
+references: [LLM06, LLM10, LLM01]
 ---
 
 # Policy Rationale: Vercel AI SDK Agent Safety
 
 **Policy ID:** `vercel_ai_agent_safety`  
 **File:** `vercel_ai/agent_safety.yaml`  
-**Rules:** VAI-006, VAI-007, VAI-008  
-**Severities:** high, low, medium  
-**Fix types:** config, config, config  
-**References:** LLM06 (Excessive Agency), LLM10 (Unbounded Consumption)
+**Rules:** VAI-006, VAI-007, VAI-008, VAI-009  
+**Severities:** high, low, medium, medium  
+**Fix types:** config, config, config, config  
+**References:** LLM06 (Excessive Agency), LLM10 (Unbounded Consumption), LLM01 (Prompt Injection)
 
 ---
 
@@ -37,13 +42,17 @@ references: [LLM06, LLM10]
 Agent-scope rules for Vercel AI SDK agents — the `generateText` / `streamText` /
 `generateObject` / `streamObject` tool-loop calls and the `ToolLoopAgent` class
 (normalized `vercel_ai_agent`). **VAI-006** fires when the agent's `tools` record
-includes a provider execution tool — anthropic's `bash` / `computer` /
-`codeExecution`, openai's `localShell` / `computerUsePreview` / `codeInterpreter`,
-or google's `codeExecution` (predicate `agent_uses_hosted_tool_class`).
-**VAI-007** fires when the agent sets neither `stopWhen` nor `maxSteps`
-(predicate `agent_kwarg_missing` for both). **VAI-008** fires when
-`toolChoice: "required"` is combined with one of those provider execution tools
-(predicates `agent_kwarg_value` + `agent_uses_hosted_tool_class`).
+includes a provider execution or file-editing tool — anthropic's `bash` /
+`computer` / `textEditor` / `codeExecution`, openai's `localShell` /
+`computerUsePreview` / `codeInterpreter`, or google's `codeExecution` (predicate
+`agent_uses_hosted_tool_class`). **VAI-007** fires when the agent sets neither
+`stopWhen` nor `maxSteps` (predicate `agent_kwarg_missing` for both). **VAI-008**
+fires when `toolChoice: "required"` is combined with one of those provider
+execution tools (predicates `agent_kwarg_value` + `agent_uses_hosted_tool_class`).
+**VAI-009** fires when the agent wires a provider tool that retrieves
+model-chosen web content — anthropic's `webSearch`, openai's `webSearch` /
+`webSearchPreview`, or google's `googleSearch` / `urlContext` (predicate
+`agent_uses_hosted_tool_class`).
 
 ---
 
@@ -76,17 +85,21 @@ the model's options toward exactly the capability you least want it reaching for
 
 ## Rule-by-rule defense
 
-### VAI-006 — Agent wires a provider shell / computer / code-execution tool (Severity: high, Confidence: 0.85, Fix type: config)
+### VAI-006 — Agent wires a provider shell / computer / file-editing / code-execution tool (Severity: high, Confidence: 0.85, Fix type: config)
 
 **What we detect:** an agent whose `tools` record includes a provider execution
-tool (anthropic `bash`/`computer`/`codeExecution`, openai
-`localShell`/`computerUsePreview`/`codeInterpreter`, google `codeExecution`) —
-predicate `agent_uses_hosted_tool_class`.
+or file-editing tool (anthropic `bash`/`computer`/`textEditor`/`codeExecution`,
+openai `localShell`/`computerUsePreview`/`codeInterpreter`, google
+`codeExecution`) — predicate `agent_uses_hosted_tool_class`. `textEditor` is
+matched alongside the execution tools because a model-driven file editor reaches
+the same outcome one step removed: writing attacker-chosen content to a file that
+is later executed, imported, or trusted.
 
 **Why it is flaggable:** these provider tools give the model shell, full computer
-control, or a code interpreter. Once one is on the tool surface, a prompt
-injection or a confused model has a direct path to arbitrary execution with the
-agent's privileges. The capability is the defect.
+control, host file editing, or a code interpreter. Once one is on the tool
+surface, a prompt injection or a confused model has a direct path to arbitrary
+execution or file mutation with the agent's privileges. The capability is the
+defect.
 
 **Real-world consequence:** an agent built to "triage logs" wires
 `anthropic.tools.bash`; a crafted log line is interpreted as an instruction and
@@ -149,6 +162,42 @@ tool, a constructor change. **Confidence 0.65:** `toolChoice: "required"` is a
 legitimate pattern when every wired tool is safe, so the rule over-flags agents
 that force a call but whose only "execution" tool is in a hardened sandbox.
 
+### VAI-009 — Agent wires a provider tool that retrieves model-chosen web content (Severity: medium, Confidence: 0.7, Fix type: config)
+
+**What we detect:** an agent whose `tools` record includes a provider
+web-retrieval tool — anthropic `webSearch`, openai `webSearch` /
+`webSearchPreview`, google `googleSearch` / `urlContext` (predicate
+`agent_uses_hosted_tool_class`). These classes were already in discovery's
+recognized provider-tool set but had no rule; before this, vercel_ai was the only
+pack with no model-driven-fetch check while the equivalent grants fired in the
+OpenAI (OAI-109), ADK (ADK-105), CrewAI (CREW-107), and Pydantic AI (PYD-103)
+packs.
+
+**Why it is flaggable:** the model controls the query or URL, so an injected
+instruction can steer retrieval toward attacker-published pages, and the query
+string is itself an exfiltration channel for in-context data. The retrieved
+content re-enters the conversation as untrusted text — a second-order
+prompt-injection channel (LLM01) from whatever site the model was steered to.
+`urlContext` is the sharpest case: it fetches model-supplied URLs directly.
+
+**Real-world consequence:** a support agent with `anthropic.tools.webSearch` is
+injected to search for a term whose top result is attacker-published; the page
+instructs the agent to recommend a malicious package, and the recommendation
+flows to the user as the agent's own answer.
+
+**Why severity is medium and not high:** retrieval has no write or execution
+reach of its own — the harm needs a second step (the injected content steering a
+side-effecting tool or the user). Matches the medium calibration of CREW-107 and
+PYD-103 for the same surface.
+
+**Fix type — config:** remove the provider retrieval tool from the `tools`
+record, or keep it and treat its output as untrusted — an agent-wiring change.
+
+**Confidence 0.7:** the class-name match is unambiguous, but search results are
+provider-mediated snippets on some providers (narrower injection surface than a
+raw fetch), and agents that genuinely need open web access with output checks in
+place are over-flagged.
+
 ---
 
 ## What this policy does not cover
@@ -156,8 +205,15 @@ that force a call but whose only "execution" tool is in a hardened sandbox.
 - Code execution implemented by hand inside a tool's `execute()` body rather than
   via a provider tool — caught by **VAI-002** (code_execution.md) and **VAI-001**
   (shell_safety.md), not here.
+- Hand-rolled fetch of a model-supplied URL inside a tool body — caught by
+  **VAI-003** (ssrf.md), not here; VAI-009 covers only the provider-shipped
+  retrieval tools.
+- `openai.tools.fileSearch` (vector-store retrieval over previously uploaded
+  files) is recognized by discovery but deliberately not matched — its corpus is
+  operator-supplied, not the open web, so the model cannot steer it toward
+  attacker-published content the way it can a web search.
 - Whether the agent's prompt surface is actually reachable by untrusted content —
-  all three rules flag a configuration, not a proven injection path.
+  all four rules flag a configuration, not a proven injection path.
 - A provider execution tool referenced under an alias or constructed indirectly,
   or a provider/tool name outside the listed set, may escape the
   class-name match.

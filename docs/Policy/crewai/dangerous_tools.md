@@ -13,6 +13,11 @@ rules:
     confidence: 0.7
     scope: agent
     fix_type: config
+  - id: CREW-109
+    severity: high
+    confidence: 0.75
+    scope: agent
+    fix_type: config
 references: [LLM02, LLM06]
 ---
 
@@ -20,24 +25,26 @@ references: [LLM02, LLM06]
 
 **Policy ID:** `crewai_dangerous_tools`  
 **File:** `crewai/dangerous_tools.yaml`  
-**Rules:** CREW-106, CREW-107  
-**Severities:** high, medium  
-**Fix types:** config, config  
+**Rules:** CREW-106, CREW-107, CREW-109  
+**Severities:** high, medium, high  
+**Fix types:** config, config, config  
 **References:** LLM02 (Sensitive Information Disclosure), LLM06 (Excessive Agency)
 
 ---
 
 ## What this policy covers
 
-Agent-scope rules for two classes of high-risk `crewai_tools` built-ins wired
+Agent-scope rules for three classes of high-risk `crewai_tools` built-ins wired
 onto an `Agent`. **CREW-106** fires when the agent wires `FileReadTool` with no
 `file_path=` pin (predicate: `agent_uses_hosted_tool_class` for `FileReadTool`
 AND `not agent_hosted_tool_kwarg_present` for its `file_path` kwarg). **CREW-107**
 fires when the agent wires any of the web-fetching / RAG built-ins that retrieve
 a model-chosen URL — `ScrapeWebsiteTool`, `SeleniumScrapingTool`,
 `WebsiteSearchTool`, `SerperDevTool`, `JSONSearchTool`, `PDFSearchTool`, or
-`CSVSearchTool` (predicate `agent_uses_hosted_tool_class`). Both read the
-agent's resolved tool edges, not any tool body.
+`CSVSearchTool` (predicate `agent_uses_hosted_tool_class`). **CREW-109** fires
+when the agent wires a file-writing built-in — `FileWriterTool` or
+`FileWriteTool` (same predicate). All three read the agent's resolved tool
+edges, not any tool body.
 
 ---
 
@@ -110,16 +117,52 @@ controls — no tool source edit. **Confidence 0.7:** the rule flags the tool's
 presence, not a proven reachable internal target, so it over-flags agents that
 only ever fetch vetted external URLs or run behind a strict egress allow-list.
 
+### CREW-109 — Agent wires a model-driven file-writing tool (Severity: high, Confidence: 0.75, Fix type: config)
+
+**What we detect:** an `Agent` that wires `FileWriterTool` or `FileWriteTool`
+(predicate `agent_uses_hosted_tool_class`). Both classes are in discovery's
+recognized `crewai_tools` set; before this rule they were discovered but
+unaudited, while the strictly less dangerous unconstrained *read* fired CREW-106.
+
+**Why it is flaggable:** both the target path and the written content are
+supplied by the model at call time. A prompt injection can therefore write
+attacker-chosen bytes to any path the agent process can reach — overwrite
+application source or config, drop a script where something else executes it
+(cron, CI, an imported module), or plant credential files. A model-driven write
+turns injected text into persistent state and, transitively, into code execution
+(LLM06).
+
+**Real-world consequence:** an agent given `FileWriterTool()` to "save the
+report" is injected to write a modified `conftest.py` into the repo root; the
+next test run executes the attacker's code.
+
+**Why severity is high and not critical:** the write is bounded by the agent
+process's filesystem permissions and still needs a second step (something
+executing or trusting the written file) before it becomes code execution — it is
+not the unconditional in-process execution the engine reserves critical for.
+
+**Fix type — config:** remove the tool or wrap it in a custom tool that pins the
+output directory and validates filenames — an agent-wiring change, not a tool
+source edit.
+
+**Confidence 0.75:** the class-name match is unambiguous and the tool takes no
+constructor pin (unlike `FileReadTool`'s `file_path=`), so there is no safe
+construction form to exempt; the gap is an agent whose runtime filesystem is
+already sandboxed to a scratch directory, which the static match cannot see.
+
 ---
 
 ## What this policy does not cover
 
 - A *pinned* `FileReadTool(file_path="...")` does not fire (by design) — but the
   rule does not verify that the pinned path is itself safe or non-sensitive.
-- File read or URL fetch implemented by hand inside a `@tool` body rather than
-  via these built-ins. Hand-rolled SSRF is caught by **CREW-005** (ssrf.md);
-  there is no tool-scope CrewAI rule for hand-rolled arbitrary file read, so a
-  custom file-reading tool body is a coverage gap.
+- File read, file write, or URL fetch implemented by hand inside a `@tool` body
+  rather than via these built-ins. Hand-rolled SSRF is caught by **CREW-005**
+  (ssrf.md); there is no tool-scope CrewAI rule for hand-rolled arbitrary file
+  read or write, so a custom file-touching tool body is a coverage gap.
+- The read-only directory built-ins (`DirectoryReadTool`, `DirectorySearchTool`)
+  are recognized by discovery but deliberately not matched — enumeration is a
+  reconnaissance aid, not a direct read/write/execute capability.
 - A custom subclass of any of these built-ins under a different class name, or a
   third-party scraper/RAG tool not in the listed set, is not matched.
 - Whether the agent's prompt surface is actually reachable by untrusted input —

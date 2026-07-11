@@ -45,8 +45,9 @@ type — `output_type` is absent (defaulting to `str`) or set explicitly to `str
 (predicate: `agent_kwarg_missing` OR `agent_kwarg_value` matching `str`).
 **PYD-102** fires when the agent wires `CodeExecutionTool` (predicate
 `agent_uses_hosted_tool_class`). **PYD-103** fires when the agent wires a native
-URL fetcher — `WebFetchTool` or `UrlContextTool` (same predicate). **PYD-105**
-fires when `end_strategy="exhaustive"` (predicate `agent_kwarg_value`).
+web-retrieval tool — `WebFetchTool`, `UrlContextTool`, or `WebSearchTool` (same
+predicate). **PYD-105** fires when `end_strategy="exhaustive"` (predicate
+`agent_kwarg_value`).
 
 ---
 
@@ -129,16 +130,22 @@ change. **Confidence 0.85:** the class-name match cannot see whether the team ha
 constrained the execution environment out of band, so a few hardened uses are
 over-flagged.
 
-### PYD-103 — Agent wires a model-driven URL-fetching native tool (Severity: medium, Confidence: 0.75, Fix type: config)
+### PYD-103 — Agent wires a model-driven web-fetching or search native tool (Severity: medium, Confidence: 0.75, Fix type: config)
 
-**What we detect:** an `Agent` that wires `WebFetchTool` or `UrlContextTool`
-(predicate `agent_uses_hosted_tool_class`).
+**What we detect:** an `Agent` that wires `WebFetchTool`, `UrlContextTool`, or
+`WebSearchTool` (predicate `agent_uses_hosted_tool_class`). `WebSearchTool` is
+matched alongside the URL fetchers because it is the fourth member of discovery's
+native-tool set and shares the retrieval threat model — before this, an agent
+wiring it was silent while the equivalent grants fired in the OpenAI and ADK
+packs.
 
-**Why it is flaggable:** these native tools retrieve model-chosen URLs — an SSRF
+**Why it is flaggable:** the URL fetchers retrieve model-chosen URLs — an SSRF
 surface into internal services and the metadata endpoint, and an exfiltration
-channel to attacker URLs. Pydantic AI's built-in fetchers have needed SSRF
-hardening (CVE-2026-46678, CVE-2026-25580), so enabling one without egress controls
-reintroduces that exposure.
+channel to attacker URLs. For `WebSearchTool`, the model-chosen query is itself an
+exfiltration channel, and the returned results are attacker-reachable text that
+re-enters the context as a second-order prompt-injection channel. Pydantic AI's
+built-in fetchers have needed SSRF hardening (CVE-2026-46678, CVE-2026-25580), so
+enabling one without egress controls reintroduces that exposure.
 
 **Real-world consequence:** an agent with `WebFetchTool` is injected to fetch
 `http://169.254.169.254/latest/meta-data/iam/security-credentials/`, and the
