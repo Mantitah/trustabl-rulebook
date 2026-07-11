@@ -32,9 +32,12 @@ references: [LLM06]
 The OpenAI Agents SDK's human-in-the-loop `needs_approval` gate on sensitive tool
 calls — and the fact that its default is `False` everywhere. OAI-014 (tool scope)
 fires when a `@function_tool` that shells out, executes code, or writes the
-filesystem sets no `needs_approval` kwarg. OAI-111 (agent scope) fires when an
+filesystem has no `needs_approval` gate — the kwarg is absent or explicitly
+`False`. OAI-111 (agent scope) fires when an
 agent wires a privileged *hosted* tool (`ShellTool`, `LocalShellTool`,
-`CodeInterpreterTool`, `ApplyPatchTool`) without `needs_approval=True` on it.
+`CodeInterpreterTool`, `ApplyPatchTool`) whose `needs_approval` is likewise
+absent or explicitly `False`. In both rules `True` or a per-call approval
+callable (the SDK's documented HITL form) counts as a gate and does not fire.
 Together they cover both the custom-tool and hosted-tool sides of the same missing
 checkpoint.
 
@@ -70,7 +73,9 @@ argument, set without changing tool logic.
 
 **What we detect:** a `@function_tool` whose body shells out, runs `eval`/`exec`/
 `compile`, or writes the filesystem (`has_shell_call` / `has_code_exec_call` /
-`has_write_call`) and has no `needs_approval` kwarg.
+`has_write_call`) and has no effective `needs_approval` gate — the kwarg is
+absent or explicitly `False`; `True` or a per-call approval callable silences
+the rule.
 
 **Why it is flaggable:** the privileged operation executes model-chosen input with
 no human checkpoint, because `needs_approval` defaults to `False`.
