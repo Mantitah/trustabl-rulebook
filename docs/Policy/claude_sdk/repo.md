@@ -13,29 +13,41 @@ rules:
     confidence: 0.9
     scope: repo
     fix_type: config
-references: [LLM06]
+  - id: CSDK-204
+    severity: low
+    confidence: 0.6
+    scope: repo
+    fix_type: config
+references: [LLM06, LLM10]
 ---
 
-# Policy Rationale: Repository Permission Posture
+# Policy Rationale: Repository Session Configuration Posture
 
 **Policy ID:** `claude_sdk_repo`  
 **File:** `claude_sdk/repo.yaml`  
-**Rules:** CSDK-201, CSDK-202  
-**Severities:** high, high  
-**Fix types:** config, config  
-**References:** LLM06
+**Rules:** CSDK-201, CSDK-202, CSDK-204  
+**Severities:** high, high, low  
+**Fix types:** config, config, config  
+**References:** LLM06 (Excessive Agency), LLM10 (Unbounded Consumption)
 
 ---
 
 ## What this policy covers
 
-Repo-scope rules for project-wide Claude Agent SDK permission configuration:
-the posture declared in `.claude/settings.json` / `settings.local.json`
-(predicate `repo_claude_default_mode_is`) and the posture set in code on a
-`ClaudeAgentOptions(...)` session object (predicate
-`repo_claude_options_permission_mode_is`). Both fire once per scan, not per tool
-or per agent. Each rule fires when the respective `bypassPermissions` value is
-present.
+Repo-scope rules for project-wide Claude Agent SDK session configuration
+posture: two flavors of approval gating and one flavor of execution bounding.
+
+Approval gating: the posture declared in `.claude/settings.json` /
+`settings.local.json` (predicate `repo_claude_default_mode_is`) and the
+posture set in code on a `ClaudeAgentOptions(...)` session object (predicate
+`repo_claude_options_permission_mode_is`). Both fire once per scan, not per
+tool or per agent. Each rule fires when the respective `bypassPermissions`
+value is present.
+
+Execution bounding: whether any `ClaudeAgentOptions(...)` construction in the
+project sets an explicit `max_turns` (predicate
+`repo_claude_options_max_turns_missing`). Fires once per scan when the project
+has at least one such construction and none of them cap turns.
 
 ---
 
@@ -141,6 +153,55 @@ object built but never used) or a value overridden elsewhere at runtime; false
 negatives include a mode passed via a variable the scanner cannot resolve to a
 literal.
 
+### CSDK-204 — Claude Agent SDK session sets no explicit max_turns limit (Severity: low, Confidence: 0.6, Fix type: config)
+
+**What we detect:**
+Every non-opaque `ClaudeAgentOptions(...)` construction in the project sets no
+`max_turns` (predicate `repo_claude_options_max_turns_missing`). A
+construction built with `**` unpacking (`Opaque: true`) is skipped — its kwarg
+set is not statically knowable, so its silence on `max_turns` is not evidence
+of a missing cap. The rule fires once per scan, when at least one concrete
+construction exists and none of them set the kwarg; a project with no
+`ClaudeAgentOptions` construction at all never fires.
+
+**Why it is flaggable:**
+With no explicit `max_turns`, the session runs to whatever ceiling the
+`claude-agent-sdk` runtime applies by default rather than to a bound sized for
+the task. This is the LLM10 (Unbounded Consumption) mechanism: a model that
+loops or oscillates — retrying a failing tool, re-reading the same file,
+ping-ponging between two steps — keeps consuming turns, tokens, and tool side
+effects until the implicit ceiling is reached.
+
+**Real-world consequence:**
+An unattended or server-side session with no turn cap can run substantially
+longer, and touch substantially more tool side effects, than the task
+warrants before the SDK's own default intervenes — and that default is an
+implementation detail of the SDK release in use, not a value declared in the
+project. A stuck run also fails silently rather than surfacing as a clean,
+observable stop at a bound the developer chose.
+
+**Why severity is low and not higher:**
+A runtime-level default ceiling exists — the SDK does not let a session run
+forever — so this is not an unbounded-loop finding, it is a missing
+*explicit, task-sized* bound. That places it in the same category as LC-102 /
+LC-111 (LangChain `max_iterations`) and CREW-110 (CrewAI `max_iter`): real but
+modest risk, since a generic framework ceiling already bounds the worst case.
+
+**Fix type — config:**
+Pass `max_turns=` to `ClaudeAgentOptions(...)`, sized to the work the session
+actually does. It is a constructor argument change, not a tool-logic change.
+
+**Confidence 0.6:**
+Lower than CSDK-201/202 because the finding is about an omission rather than a
+dangerous value present in code, so it carries a higher false-positive
+surface: an options object built but never used to drive a real session, a
+cap enforced by a wrapper or retry harness outside the constructor call
+itself, or a genuinely short-lived session where no cap is needed in
+practice. False negatives include a `max_turns` value passed via a variable
+the scanner cannot resolve to a literal, and — see the coverage gap below —
+any TypeScript project, since discovery of `ClaudeAgentOptions(...)` is
+Python-only today.
+
 ---
 
 ## What this policy does not cover
@@ -154,6 +215,18 @@ literal.
   a separate settings-permission policy would cover that surface.
 - Whether the agent's tools are themselves dangerous; this policy is about the
   approval gate, not what is behind it.
+- **TypeScript session configuration (CSDK-204).** Discovery of
+  `ClaudeAgentOptions(...)` walks Python AST only. The TypeScript equivalent —
+  `query({ options: { maxTurns } } )` — is modeled as a `QueryMainAgent`
+  agent-scope declaration, not a `ClaudeAgentOptionsDef`, so a TypeScript
+  project with no `maxTurns` is currently invisible to this rule. Closing this
+  gap needs an agent-scope rule targeting `claude_query_main`, not a change to
+  this policy.
+- **CSDK-204 exact default behavior.** The rule deliberately does not assert
+  a specific default turn count in its `explanation` text; the SDK's default
+  was not independently verified for this rationale doc, unlike the
+  documented CrewAI default of 20 (CREW-110) or LangChain's default of 15
+  (LC-102).
 
 ---
 
@@ -171,7 +244,8 @@ literal.
 
 ```python
 # In code: prompt on tool calls; never bypass on a shared/prod path.
-options = ClaudeAgentOptions(permission_mode="default")
+# Also cap the session to a bound sized for the task.
+options = ClaudeAgentOptions(permission_mode="default", max_turns=12)
 ```
 
 1. Default to `default` (prompt) for anything running on a real machine; use
@@ -182,3 +256,7 @@ options = ClaudeAgentOptions(permission_mode="default")
    than reaching for `bypassPermissions` on a developer or production host.
 3. Keep `settings.local.json` (developer-local, gitignored) for any personal
    loosening, so a bypass never lands in the shared, checked-in config.
+4. Size `max_turns` to the task, not to "whatever the default allows." If a
+   task legitimately needs many turns, prefer splitting it into bounded
+   sub-sessions over raising the cap — a large cap defeats the point of having
+   one.
