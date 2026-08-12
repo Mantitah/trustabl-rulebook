@@ -53,6 +53,21 @@ rules:
     confidence: 0.5
     scope: skill
     fix_type: config
+  - id: CSKILL-070
+    severity: low
+    confidence: 0.9
+    scope: skill
+    fix_type: config
+  - id: CSKILL-061
+    severity: low
+    confidence: 0.7
+    scope: skill
+    fix_type: config
+  - id: CSKILL-071
+    severity: low
+    confidence: 0.6
+    scope: skill
+    fix_type: config
 references: [LLM01, LLM02, LLM03, LLM06, AST03, AST04, AST05, AST08, ASI04]
 ---
 
@@ -60,8 +75,8 @@ references: [LLM01, LLM02, LLM03, LLM06, AST03, AST04, AST05, AST08, ASI04]
 
 **Policy ID:** `claude_skill_safety`  
 **File:** `claude_skill/skill_safety.yaml`  
-**Rules:** CSKILL-001, CSKILL-002, CSKILL-003, CSKILL-010, CSKILL-011, CSKILL-030, CSKILL-020, CSKILL-040, CSKILL-050, CSKILL-060  
-**Severities:** high, high, critical, high, critical, high, medium, medium, high, medium  
+**Rules:** CSKILL-001, CSKILL-002, CSKILL-003, CSKILL-010, CSKILL-011, CSKILL-030, CSKILL-020, CSKILL-040, CSKILL-050, CSKILL-060, CSKILL-070, CSKILL-061, CSKILL-071  
+**Severities:** high, high, critical, high, critical, high, medium, medium, high, medium, low, low, low  
 **Fix types:** config (SKILL.md edits) + code (bundled-file edits for CSKILL-010/011/030)  
 **References:** OWASP LLM Top 10:2025 — LLM01, LLM02, LLM03, LLM06 · OWASP Agentic Skills Top 10 — AST03, AST04, AST05, AST08 · OWASP ASI — ASI04
 
@@ -89,8 +104,12 @@ auto-approved tool grants, bundled executable scripts, and — in Claude Code �
 skill**. Empirical study of public skill marketplaces (Snyk ToxicSkills, 2026)
 found a security flaw in roughly a third of skills, with script-bundling skills
 markedly worse than instruction-only ones. Skills are third-party code you
-execute; these rules flag the patterns that make a skill dangerous on
-activation.
+execute; most of the rules below flag the patterns that make a skill dangerous
+on activation. CSKILL-070, CSKILL-061, and CSKILL-071 are a separate
+low-severity tier — skill-metadata and portability hygiene checks (a missing
+description, a redundant tool grant, an undocumented agent binding) that make a
+skill harder to review or reuse safely, without themselves being an attack
+surface.
 
 **Standards mapping.** These rules map to the **OWASP Agentic Skills Top 10**
 (AST): over-privileged grants (**AST03**); metadata that misrepresents capability
@@ -128,6 +147,24 @@ prompt-injection channel (LLM01), and external URLs in the body pull
 attacker-controllable content into the loop (LLM01) and double as exfiltration
 endpoints. Skills spread by sharing and forking (LLM03, supply chain), so an
 over-privileged template propagates its blast radius wherever it is reused.
+
+**CSKILL-070/061/071 are a different kind of concern: metadata quality and
+reusability, not attack surface.** None of the three widen what a skill can do
+— a missing description grants no new tool, a duplicate `allowed-tools` entry
+grants no new tool, and an `agent:` binding doesn't itself execute anything.
+What they degrade is the human and model *review* process the rest of this
+policy assumes works: CSKILL-070's `description` is the field CSKILL-060 relies
+on a user reading to catch a capability mismatch — if it's empty, there is
+nothing to check the grants against, and Claude has no signal to decide whether
+invoking the skill is appropriate. CSKILL-061's duplicate grant doesn't expand
+capability, but it clutters the exact list CSKILL-001/050 ask a reviewer to
+scope down, making an already-broad `allowed-tools` line harder to audit at a
+glance. CSKILL-071's agent binding doesn't run code, but it hides a coupling —
+the skill silently inherits whichever trust and guardrail assumptions the named
+agent carries — that a reviewer evaluating the skill in isolation would miss.
+They are graded `low` accordingly: none is exploitable on its own, so they sit
+beneath every security-focused rule in this pack, including CSKILL-040's
+`medium` review nudge.
 
 ---
 
@@ -336,6 +373,108 @@ benign-sounding description — but the read-only-claim regex is a heuristic tha
 can match incidental phrasing, so it ships at the pack's lowest confidence as a
 review nudge. The broader "implicitly read-only-sounding" case is out of scope.
 
+### CSKILL-070 — Skill is missing a description (low, 0.9, config)
+
+**What we detect:** The skill's `description` frontmatter field is absent or
+blank after trimming whitespace (`skill_has_description: false`).
+
+**Why it is flaggable:** A skill's `description` is the one field guaranteed to
+enter Claude's context regardless of whether the skill ever triggers, and it is
+the only thing a user sees when deciding whether to install one. With it empty,
+CSKILL-060's description-vs-grants check has nothing to compare against, Claude
+has no basis for choosing to invoke the skill over another, and a human
+reviewer has no summary to start from — they have to read the full body and
+every bundled file cold.
+
+**Real-world consequence:** A skill shipped with `name:` set but no
+`description:` line sits in a shared `.claude/skills/` directory alongside
+dozens of others; neither the model nor a teammate scanning the list can tell
+what it does without opening the file, so it either gets ignored or invoked on
+a guess.
+
+**Why low (not medium):** A missing description degrades review, but it grants
+nothing and executes nothing on its own — it is strictly weaker than every
+rule above it, none of which requires anything else to be true to matter.
+
+**Confidence 0.9:** The check is a direct presence test on one frontmatter
+field with no pattern matching involved, so it has no realistic false-positive
+surface — a description is either present or it isn't. The only judgment call
+priced in is one of scope, not accuracy: CSKILL-070 does not evaluate whether a
+*present* description is any good (see "What this policy does not cover"
+below).
+
+### CSKILL-061 — Skill allowed-tools list has duplicate tool references (low, 0.7, config)
+
+**What we detect:** The same normalized token appears more than once in
+`allowed-tools` — case-insensitive, whitespace-trimmed exact match
+(`skill_has_duplicate_tool_refs: true`).
+
+**Why it is flaggable:** A duplicate entry grants nothing an author didn't
+already grant once; its cost is purely to review. `allowed-tools` is the list a
+reviewer reads to understand exactly what a skill is authorized to do (per
+CSKILL-001/050's least-privilege guidance), and a repeated entry is noise in
+that list — evidence the grants were edited by hand or merged from multiple
+sources without cleanup, which is itself a weak signal the rest of the list may
+be stale too.
+
+**Real-world consequence:** A skill's `allowed-tools` accretes entries across
+several PRs — `Bash(git diff *)` is added twice by two contributors who didn't
+check the existing list — and a reviewer scanning it either double-counts the
+grant's intent or has to stop and diff the list by hand to confirm nothing else
+is duplicated.
+
+**Why low:** Redundant, not over-privileged — the skill's actual capability is
+identical with or without the duplicate, so this carries none of the
+capability-expansion risk CSKILL-001/050 flag.
+
+**Confidence 0.7 — substantive gap, not a rounding choice:** The match is exact
+string comparison after normalizing case and whitespace, which means it never
+flags two entries that merely *look* related but differ in scope — `Bash` and
+`Bash(git *)` are two different grants (the second is strictly narrower), not a
+duplicate, and the predicate correctly leaves that pair alone. That precision
+cuts the other way, though: it also means CSKILL-061 misses the more common
+real-world case of redundant *coverage* — `Bash(*)` and `Bash(git *)` together,
+where the second entry adds nothing because the first already subsumes it, but
+the strings differ so no duplicate is reported. The rule catches literal
+copy-paste repeats reliably; it does not reason about which grants overlap in
+effect, so confidence sits at 0.7 to reflect that narrower, syntactic scope
+rather than any risk of misfiring on the cases it does catch.
+
+### CSKILL-071 — Skill is bound to a single agent, reducing portability (low, 0.6, config)
+
+**What we detect:** The skill's `agent:` frontmatter field is set to a non-empty
+value (`skill_is_agent_specific: true`).
+
+**Why it is flaggable:** An `agent:`-bound skill is written against one
+sub-agent's tool access, permission mode, and behavioral assumptions rather
+than being reusable as-is. Reviewing it in isolation is misleading — its actual
+risk profile depends on the agent it's coupled to — and forking or reusing it
+elsewhere silently carries that coupling along unless the new context happens
+to match.
+
+**Real-world consequence:** A skill written and tested only against a
+locked-down `Explore`-style read-only agent is copied into a project and
+invoked from a general-purpose agent with broader grants; the skill's
+instructions assume constraints (e.g. "no writes possible") that no longer
+hold, because the binding — and the assumption behind it — wasn't visible from
+the skill file alone.
+
+**Why low:** The binding is declarative metadata, not a grant or an executable
+statement — it changes nothing about what the skill can do on its own; it only
+changes how safely its risk can be assessed out of context.
+
+**Confidence 0.6 — substantive gap, not a rounding choice:** The predicate
+checks only the `agent:` field, not the related `context:` field — a skill
+that sets `context: fork` without also naming an `agent:` is not flagged, even
+though it is arguably the same portability concern (see "What this policy does
+not cover"). In the other direction, the predicate cannot tell an intentional,
+documented coupling from an accidental one: a skill whose description says "for
+use with the Explore agent only" and one that binds `agent: Explore` with no
+explanation both fire identically. The rule's own `explanation` text calls out
+"context: fork / agent: <name>" as the pattern to watch for, but only the
+latter half is actually checked — that gap between the documented concern and
+the narrower implemented check is what confidence 0.6 prices in.
+
 ---
 
 ## What this policy does not cover (v1)
@@ -371,6 +510,21 @@ review nudge. The broader "implicitly read-only-sounding" case is out of scope.
   static check cannot see.
 - **Runtime-fetched remote instructions** — the rules see the fetch (CSKILL-020),
   not the payload, which can change after review.
+- **Description quality.** CSKILL-070 checks only that `description` is
+  non-blank; a one-word or misleading description passes with the same result
+  as a precise, useful one. Judging description accuracy against the skill's
+  actual body and grants is a harder, more subjective check and is out of
+  scope for v1.
+- **Semantically overlapping tool grants.** CSKILL-061 flags exact, normalized
+  duplicate entries in `allowed-tools`; it does not detect redundant coverage
+  between differently-scoped entries (`Bash(*)` alongside `Bash(git *)`), which
+  requires parsing and comparing the tool-pattern grammar rather than string
+  equality.
+- **Intentional vs. accidental agent binding.** CSKILL-071 fires on any
+  non-empty `agent:` field; it does not distinguish a documented, deliberate
+  coupling from an accidental one, and it does not fire on `context: fork` set
+  without a named `agent:`, even though that carries a related portability
+  concern.
 
 ---
 
@@ -396,3 +550,8 @@ Summarize the working-tree changes and flag anything risky.
 4. **Treat skills as third-party code:** review `SKILL.md` and every bundled file
    before trusting a repo; for untrusted environments, set
    `disableSkillShellExecution: true` in managed settings.
+5. **Keep metadata honest and clean:** the example above already reflects this —
+   a real `description:` (CSKILL-070), no repeated entries in `allowed-tools`
+   (CSKILL-061), and no `agent:` binding since this skill is meant to be
+   reusable across agents (CSKILL-071). If a skill genuinely is agent-specific,
+   say so in the description rather than leaving the coupling implicit.
