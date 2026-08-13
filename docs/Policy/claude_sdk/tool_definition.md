@@ -28,6 +28,16 @@ rules:
     confidence: 0.9
     scope: tool
     fix_type: code
+  - id: CSDK-017
+    severity: low
+    confidence: 0.85
+    scope: tool
+    fix_type: code
+  - id: CSDK-018
+    severity: low
+    confidence: 0.8
+    scope: tool
+    fix_type: code
 references: [LLM06]
 ---
 
@@ -35,9 +45,9 @@ references: [LLM06]
 
 **Policy ID:** `claude_sdk_tool_definition`  
 **File:** `claude_sdk/tool_definition.yaml`  
-**Rules:** CSDK-001, CSDK-002, CSDK-007, CSDK-008, CSDK-014  
-**Severities:** low, medium, low, medium, low  
-**Fix types:** code, code, code, code, code  
+**Rules:** CSDK-001, CSDK-002, CSDK-007, CSDK-008, CSDK-014, CSDK-017, CSDK-018  
+**Severities:** low, medium, low, medium, low, low, low  
+**Fix types:** code, code, code, code, code, code, code  
 **References:** LLM06
 
 ---
@@ -51,7 +61,11 @@ registrations, for the description and name checks). CSDK-001 fires when the
 function has no docstring (predicate `has_docstring: false`); CSDK-002 when no
 parameter is type-annotated (`has_typed_params: false` with params present);
 CSDK-007 when the function name is a vague verb like `process`, `handle`, `run`,
-`execute`, or `do` (`name_in`).
+`execute`, or `do` (`name_in`). CSDK-017 and CSDK-018 check description
+*quality* rather than description *presence* — a tool can pass CSDK-001 (it has
+a docstring) and still give the model nothing usable, either because the text
+is a placeholder stub (CSDK-017) or because it is too short to carry a
+selection signal (CSDK-018).
 
 ---
 
@@ -77,6 +91,18 @@ These are reliability and correctness issues rather than direct exploits, but in
 an agentic setting a mis-selected tool *is* an unintended action — which is why
 the cluster anchors loosely to OWASP LLM06 (Excessive Agency): poor tool
 boundaries let the model act in ways the author did not intend.
+
+CSDK-017 and CSDK-018 are, as of this writing, the only rule pair in this
+policy with direct empirical backing rather than first-principles reasoning
+about the SDK's routing mechanism: Hasan et al., *MCP Tool Descriptions Are
+Smelly!* (arXiv 2602.14878), audited 856 real-world MCP tool descriptions
+across 103 servers and found 97.1% carried at least one description-quality
+defect, with 56% failing to state the tool's purpose clearly. That finding is
+the empirical case for treating description *quality* as a distinct,
+independently-worth-checking failure mode from description *presence* —
+CSDK-001 alone would have passed nearly all of the smelly descriptions the
+study found, because a placeholder or a five-word stub still satisfies
+`has_docstring: true`.
 
 ---
 
@@ -238,6 +264,87 @@ lower.
 
 ---
 
+### CSDK-017 — Tool description is a placeholder (Severity: low, Confidence: 0.85, Fix type: code)
+
+**What we detect:**
+A tool whose description contains a placeholder marker — `todo`, `tbd`,
+`fixme`, `placeholder`, `no description`, or `does stuff` — matched
+case-insensitively against the full description text
+(`has_description_text: [todo, tbd, fixme, placeholder, "no description",
+"does stuff"]`). Unlike CSDK-001, this rule does not require the docstring to
+be absent; it fires on a docstring that exists but is a stub.
+
+**Why it is flaggable:**
+The SDK forwards the description to the model verbatim as its selection
+signal. A stub like `"""TODO: describe this tool."""` passes CSDK-001's
+`has_docstring: true` check yet gives the model exactly as little to route on
+as no description at all — the marker text describes the author's unfinished
+work, not the tool.
+
+**Real-world consequence:**
+A tool `def lookup(q: str)` docstringed `"""TODO"""` sits next to `def
+search(q: str)` with a real description; the model has no way to know
+`lookup` even exists as an option and either ignores it or calls it on a
+guess, same as the CSDK-001 failure mode but hidden from a docstring-presence
+check.
+
+**Why severity is low and not medium:**
+Same reasoning as CSDK-001: it degrades selection quality without directly
+causing harm, and a distinctive function name partially compensates.
+Confidence is *higher* than CSDK-001 despite the lower severity — see below.
+
+**Fix type — code:**
+Replace the placeholder with a real description — a source edit.
+
+**Confidence 0.85:**
+The marker list is curated and deliberately narrow (`todo`, `tbd`, `fixme`,
+`placeholder`, `no description`, `does stuff`), so a match is rarely
+accidental — a legitimate description that happens to contain the substring
+`"todo"` (e.g. `"Sync items to the user's todo list"`) is the main false-positive
+class, which is why this sits a notch below CSDK-001's 0.95 rather than above
+it despite the narrower trigger set.
+
+### CSDK-018 — Tool description is too short to guide model selection (Severity: low, Confidence: 0.8, Fix type: code)
+
+**What we detect:**
+A tool that has a docstring (`has_docstring: true`, guarding against
+double-firing alongside CSDK-001) whose trimmed description is under 40
+characters (`description_length_lt: 40`). Both conditions must hold
+(`all:`).
+
+**Why it is flaggable:**
+Forty characters is roughly the length of `"Gets data."` or `"Processes the
+request."` — long enough to exist, far too short to say what the tool does,
+what it returns, or when to prefer it over a similarly-named neighbor. The
+model gets a description-shaped string with none of the information a
+description exists to carry.
+
+**Real-world consequence:**
+`def get_user(id: str) -> dict:` docstringed `"""Gets a user."""` (16 chars)
+sits next to `get_user_preferences` and `get_user_permissions`; the model
+cannot tell from either description which one to call for a "what can this
+user do" query and either picks wrong or calls all three.
+
+**Why severity is low and not medium:**
+As with CSDK-001 and CSDK-017, this degrades routing precision rather than
+causing a direct failure, and a specific function name can partly compensate
+for a thin description.
+
+**Fix type — code:**
+Expand the description — a source edit.
+
+**Confidence 0.8:**
+The lowest confidence in this policy, and the threshold is the reason: 40
+characters is a length heuristic, not a semantic judgment of sufficiency. A
+tool with self-explanatory parameter names (`def convert_usd_to_eur(amount:
+float) -> float:` docstringed `"""Converts USD to EUR."""`, 21 chars) may
+need little prose because the signature itself carries the routing signal —
+a real false-positive class this rule cannot distinguish from a genuine stub.
+The guard against double-firing with CSDK-001 (`has_docstring: true`) is exact,
+not probabilistic; the 0.8 reflects the length threshold alone.
+
+---
+
 ## What this policy does not cover
 
 - Descriptions or names that are present but *misleading* — a docstring that
@@ -250,6 +357,14 @@ lower.
 - For CSDK-014: a TypeScript description assembled from a non-literal expression
   (a `const` reference, a template string, a concatenation) is real text the model
   sees, but the literal-only capture records it as empty and fires anyway.
+- Whether a description is *accurate* — CSDK-017 and CSDK-018 check that a
+  description is present and long enough, not that it correctly describes
+  what the tool does. A confidently-worded, 200-character description of the
+  wrong behavior passes both.
+- The 40-character floor in CSDK-018 is a length heuristic, not a semantic
+  one; it does not account for tools whose parameter names already carry most
+  of the routing signal and can be genuinely self-explanatory at a length
+  the rule still flags.
 
 ---
 
