@@ -18,17 +18,22 @@ rules:
     confidence: 0.75
     scope: agent
     fix_type: config
-references: [LLM05, LLM06]
+  - id: CREW-110
+    severity: low
+    confidence: 0.6
+    scope: agent
+    fix_type: config
+references: [LLM05, LLM06, LLM10]
 ---
 
 # Policy Rationale: CrewAI Agent Safety
 
 **Policy ID:** `crewai_agent_safety`  
 **File:** `crewai/agent_safety.yaml`  
-**Rules:** CREW-101, CREW-102, CREW-104  
-**Severities:** high, high, medium  
-**Fix types:** config, config, config  
-**References:** LLM05 (Improper Output Handling), LLM06 (Excessive Agency)
+**Rules:** CREW-101, CREW-102, CREW-104, CREW-110  
+**Severities:** high, high, medium, low  
+**Fix types:** config, config, config, config  
+**References:** LLM05 (Improper Output Handling), LLM06 (Excessive Agency), LLM10 (Unbounded Consumption)
 
 ---
 
@@ -41,6 +46,12 @@ execution or delegation reach: `allow_code_execution=True` (CREW-101),
 (CREW-104). Each is matched by the `agent_kwarg_value` predicate against the
 literal value in the constructor call, so the rule fires on the declaration
 itself, not on any downstream use.
+
+A fourth rule reads the *absence* of a kwarg rather than its value:
+**CREW-110** fires when an `Agent(...)` sets no `max_iter` (predicate
+`agent_kwarg_missing`), flagging a tool-calling loop with no explicit
+iteration cap — a cost and latency bound, not an excessive-agency grant like
+the three above it.
 
 ---
 
@@ -69,6 +80,19 @@ interpreter or an unconstrained file reader, a prompt injection against this
 agent can reach that capability indirectly, even though this agent was never
 granted it directly. In an agent crew the attacker does not need to compromise
 the powerful agent; it only needs to compromise one that can delegate to it.
+
+Iteration bounds (CREW-110) are the reliability face of the same constructor.
+An `Agent` with no explicit `max_iter` still runs under CrewAI's default
+iteration cap (documented as 20), so it will not spin forever — but that
+ceiling is generic, not sized to the role. A model that oscillates between two
+tools burns the full budget of tool round-trips and LLM calls before CrewAI
+forces a final answer, and in a crew the cost compounds: every agent on the
+critical path can spend its own budget before the workflow returns. The
+implicit cap is also a moving target — it has changed across CrewAI releases,
+so a version bump silently shifts the bound the agent actually runs under.
+That places it under LLM10 (Unbounded Consumption) rather than LLM06: the
+damage is spend, latency, and — when the looped tools have side effects —
+repeated writes, not a capability the model should never have held.
 
 ---
 
@@ -142,6 +166,45 @@ constructor kwarg. **Confidence 0.75:** the rule cannot see whether any
 reachable peer actually holds a dangerous capability, so it over-flags benign
 all-read-only crews — the gap that drops it below the code-execution rules.
 
+### CREW-110 — CrewAI agent has no explicit max_iter limit (Severity: low, Confidence: 0.6, Fix type: config)
+
+**What we detect:** an `Agent(...)` call with no effective `max_iter` kwarg —
+absent entirely, or present as an explicit `None` (predicate
+`agent_kwarg_missing`).
+
+**Why it is flaggable:** with no explicit `max_iter` the agent falls back to
+CrewAI's default iteration cap (documented as 20) — a generic ceiling, not one
+sized to this agent's role. A looping or oscillating model still burns the
+full budget of tool round-trips and LLM calls before CrewAI forces a final
+answer (LLM10, Unbounded Consumption), and the implicit cap has changed
+across CrewAI releases, so a version bump silently moves the bound. When the
+looped tools have side effects it is a correctness concern too.
+
+**Real-world consequence:** a "research" agent meant to make one search call
+gets an ambiguous goal and re-queries in a loop; it runs the full default
+budget of tool round-trips and LLM calls per crew kickoff, turning a
+sub-second lookup into a multi-minute, multi-dollar step — and if the looped
+tool writes (a ticket comment, a CRM update), the workflow emits it once per
+iteration.
+
+**Why severity is low and not medium/high:** CrewAI's framework default
+already prevents a true runaway — the loop terminates without any developer
+action — so this flags a missing *explicit, task-sized* cap, a hygiene nudge
+rather than a defect. Nothing here grants the model a capability it did not
+have; the worst case is bounded waste. **Fix type — config:** the fix is one
+constructor kwarg, no tool source changes. **Confidence 0.6:** the predicate
+reads a single constructor kwarg on a single call, and four things sit
+outside that read. `Agent(**config)` records no kwargs at all — CrewAI
+discovery marks the call opaque, but the missing-kwarg predicate does not
+consult that flag, so a config-driven agent that *does* set `max_iter` is
+flagged anyway. `Crew(...)` discovery is a documented v1 gap, so a crew-level
+bound (`max_rpm`, a crew-level `step_callback` that aborts the run) is
+invisible. The rule names only `max_iter`, so an agent bounded in wall-clock
+via `max_execution_time=` alone still fires. And in the other direction the
+check is presence-only: an `Agent(max_iter=9999)` satisfies it while being no
+real bound at all. Those over-flags are what hold it at 0.6 rather than the
+0.9 the unambiguous literal-value rules carry.
+
 ---
 
 ## What this policy does not cover
@@ -155,8 +218,17 @@ all-read-only crews — the gap that drops it below the code-execution rules.
 - Delegation risk is judged structurally: CREW-104 does not resolve the peer
   graph to confirm a dangerous capability is reachable, so it neither suppresses
   on a safe crew nor escalates on a dangerous one.
-- `Crew`-level execution settings and the `Process` topology (sequential vs.
-  hierarchical) that influence which agents can delegate are out of scope.
+- `Crew`-level execution settings — including `max_rpm` and a crew-level
+  `step_callback` — plus the `Process` topology (sequential vs. hierarchical)
+  are out of scope; `Crew(...)` discovery is a documented gap, so a centrally
+  bounded crew cannot suppress CREW-110.
+- CREW-110 reads only `max_iter`. An agent bounded by `max_execution_time=`
+  alone, or wrapped in an external timeout, is a (known) false positive.
+- CREW-110 is presence-only — it does not judge the *value*, so
+  `max_iter=9999` passes while providing no meaningful bound.
+- Kwargs supplied via `**config` unpacking are not recorded, and CREW-110 does
+  not consult the resulting opaque flag, so a config-driven `Agent(**cfg)`
+  that sets `max_iter` still fires.
 
 ---
 
@@ -173,6 +245,8 @@ researcher = Agent(
     allow_code_execution=False,   # never inject the in-process interpreter
     allow_delegation=False,       # keep the trust boundary at this agent
     tools=[vetted_search_tool],   # only the minimum the role needs
+    max_iter=5,                   # explicit, role-sized cap — not the implicit default
+    max_execution_time=120,       # wall-clock bound as well as an iteration bound
 )
 ```
 
@@ -188,3 +262,7 @@ researcher = Agent(
    on a developer machine reaches the host directly.
 4. Treat retrieved content and prior tool output as untrusted — they are the
    model-reachable surface a prompt injection rides in on.
+5. Size `max_iter` to what the role actually needs rather than accepting the
+   framework default, and pair it with `max_execution_time` so a slow or
+   stalled run is bounded in seconds as well as iterations. Set both
+   explicitly so a CrewAI version bump cannot move the bound underneath you.
