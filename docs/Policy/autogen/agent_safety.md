@@ -130,10 +130,14 @@ or disable execution. **Confidence 0.85:** the rule confirms execution is
 configured and review is off, but cannot see an out-of-band approval gate the team
 may have wired around the agent — a small over-flag.
 
-### AG2-004 — GroupChatManager has no explicit max_round bound (Severity: low, Confidence: 0.6, Fix type: config)
+### AG2-004 — Group chat has no explicit max_round bound (Severity: low, Confidence: 0.6, Fix type: config)
 
-**What we detect:** a `GroupChatManager` (or `GroupChat`) with no `max_round`
-kwarg (predicate `agent_kwarg_missing`).
+**What we detect:** a `GroupChat` config object with no `max_round` kwarg
+(predicates `agent_class: [GroupChat]` + `agent_kwarg_missing`). The match is
+anchored to `GroupChat` because `max_round` is a `GroupChat`-only constructor
+param: a `GroupChatManager` cannot accept it, so matching the manager (as an
+earlier revision did) fired on every properly configured chat — the manager def
+never carries the kwarg even when its `GroupChat` sets it.
 
 **Why it is flaggable:** with no explicit `max_round` the speaker-selection loop
 falls back to AutoGen's built-in default rather than a task-sized cap; a
@@ -149,9 +153,9 @@ rounds before a timeout kills it.
 so this flags a missing *explicit, task-sized* cap rather than a true runaway — a
 hygiene nudge whose usual worst case is a cost/availability incident, and only a
 safety problem when looped tools have side effects. **Fix type — config:** pass
-`max_round=`. **Confidence 0.8:** a chat wrapped by an external timeout or a
-custom loop guard is over-flagged, since the rule sees only the constructor
-kwarg.
+`max_round=` to `GroupChat(...)`. **Confidence 0.6:** a chat wrapped by an
+external timeout or a custom loop guard is over-flagged, since the rule sees only
+the constructor kwarg.
 
 ### AG2-005 — AssistantAgent enables code execution on the LLM agent (Severity: medium, Confidence: 0.7, Fix type: config)
 

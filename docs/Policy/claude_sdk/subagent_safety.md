@@ -13,6 +13,11 @@ rules:
     confidence: 0.85
     scope: subagent
     fix_type: config
+  - id: CSDK-112
+    severity: medium
+    confidence: 0.8
+    scope: subagent
+    fix_type: config
 references: [LLM06, LLM01]
 ---
 
@@ -20,9 +25,9 @@ references: [LLM06, LLM01]
 
 **Policy ID:** `claude_sdk_subagent_safety`  
 **File:** `claude_sdk/subagent_safety.yaml`  
-**Rules:** CSDK-110, CSDK-111  
-**Severities:** high, high  
-**Fix types:** config, config  
+**Rules:** CSDK-110, CSDK-111, CSDK-112  
+**Severities:** high, high, medium  
+**Fix types:** config, config, config  
 **References:** LLM06, LLM01
 
 > Related: [agent_safety.md](agent_safety.md) covers the same over-granting threat
@@ -37,9 +42,10 @@ references: [LLM06, LLM01]
 Claude Code subagent — whose `tools:` list grants a dangerous built-in. These fire
 per subagent file (scope: subagent), matched at any path depth, via the
 `subagent_grants_tool` predicate: CSDK-110 grants `Bash`; CSDK-111 grants a
-filesystem-write (`Write`/`Edit`) or `WebFetch` built-in. Because the surface is
-markdown frontmatter, these rules carry no `language:` field and fire regardless of
-the surrounding codebase — including on flat subagent collections that ship no SDK
+filesystem-write (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`) or `WebFetch`
+built-in; CSDK-112 grants `WebSearch`. Because the surface is markdown
+frontmatter, these rules carry no `language:` field and fire regardless of the
+surrounding codebase — including on flat subagent collections that ship no SDK
 code at all.
 
 ---
@@ -92,7 +98,10 @@ unambiguous; the gap is the genuinely shell-needing subagent (a build/test runne
 ### CSDK-111 — Subagent granted filesystem-write or web-fetch built-ins (Severity: high, Confidence: 0.85, Fix type: config)
 
 **What we detect:** A subagent whose frontmatter `tools:` grants `Write`, `Edit`,
-or `WebFetch`.
+`MultiEdit`, `NotebookEdit`, or `WebFetch`. The multi-file and notebook editors
+are matched alongside `Write`/`Edit` because they reach the same write surface —
+omitting them would let a `tools: [MultiEdit]` grant escape the check while an
+equivalent `Edit` grant fires.
 
 **Why it is flaggable:** Write built-ins let the subagent modify source, config, or
 its own `.claude/` controls; `WebFetch` pulls attacker-controllable content into the
@@ -111,6 +120,36 @@ role needs them; gate fetching with a PreToolUse host allowlist.
 
 **Confidence 0.85:** Slightly below CSDK-110 because editor and fetcher roles more
 often have a legitimate need than a pure shell grant does.
+
+### CSDK-112 — Subagent granted the WebSearch tool (Severity: medium, Confidence: 0.8, Fix type: config)
+
+**What we detect:** A subagent whose frontmatter `tools:` grants `WebSearch`
+(`subagent_grants_tool: [WebSearch]`). This is the subagent-scope analogue of the
+agent-scope CSDK-102 check on in-code `AgentDefinition` grants — before this rule,
+the same grant declared in markdown frontmatter was unaudited.
+
+**Why it is flaggable:** Search results are attacker-reachable text: anyone can
+publish a page that ranks for a query the subagent is likely to make, so the grant
+opens a prompt-injection channel (OWASP LLM01) into an autonomously-dispatched
+worker whose output the parent loop usually trusts.
+
+**Real-world consequence:** A research subagent granted `WebSearch` retrieves an
+attacker-planted page whose content instructs it to misreport findings or to steer
+the parent toward a malicious dependency; the injected conclusion flows back to the
+parent as the subagent's answer.
+
+**Why severity is medium and not high:** Matching CSDK-102's calibration — search
+returns provider-mediated snippets rather than raw page content, so the injection
+surface is narrower than `WebFetch`, and the tool itself has no write or execution
+reach. The risk compounds only when paired with side-effecting grants, which
+CSDK-110/111 flag separately.
+
+**Fix type — config:** Remove `WebSearch` from the `tools:` list unless the role is
+genuinely research-oriented (a frontmatter edit).
+
+**Confidence 0.8:** The grant is unambiguous in frontmatter; the gap is the
+legitimately research-oriented subagent, which is a more common role than a
+shell-needing one.
 
 ---
 
